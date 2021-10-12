@@ -1,0 +1,253 @@
+---
+title: "RT predictor benchmark for IP"
+author: "YH"
+date: "Oct 7, 2021"
+output: html_document
+---
+Benchmark retention time (RT) predictors for small scale immunopeptidome data
+
+```{r message=FALSE, warning=TRUE}
+library(dplyr)
+library(readxl)
+library(stringr)
+library(tidyr)
+library(vroom)
+
+library(reticulate)
+library(docknitr)
+
+# Multithreading
+Ncpu = 7
+
+# Benchmark parameters
+train_split = 500
+n_folds = 10
+peptide_data <- read_xlsx("data/Table_S1_SPI-ART_rev-v31.xlsx", sheet = 2)
+AA = c("A", "R", "N", "D", "C", "E", "Q", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V")
+
+# Create folders
+{
+  suppressWarnings(dir.create("results"))
+  suppressWarnings(dir.create("results/train"))
+  suppressWarnings(dir.create("results/train/achrom"))
+  suppressWarnings(dir.create("results/train/AutoRT"))
+  suppressWarnings(dir.create("results/train/AutoRT_models"))
+  suppressWarnings(dir.create("results/train/DeepLC"))
+  
+  suppressWarnings(dir.create("results/test"))
+  suppressWarnings(dir.create("results/test/achrom"))
+  suppressWarnings(dir.create("results/test/AutoRT"))
+  suppressWarnings(dir.create("results/test/DeepLC"))
+  
+  suppressWarnings(dir.create("results/predict"))
+  suppressWarnings(dir.create("results/predict/achrom"))
+  suppressWarnings(dir.create("results/predict/AutoRT"))
+  suppressWarnings(dir.create("results/predict/DeepLC"))
+  
+  suppressWarnings(dir.create("results/plots"))
+}
+```
+
+# (1) Pre-processing
+```{r}
+counter = 1
+counter2 = 1
+train <- peptide_data %>%
+  separate(orig_raw_file, sep = "_", into = c("run", "person", "date", "SPL", "replicate")) %>%
+  select(orig_raw_scan, run, date, SPL, Mascot_seq, RT) %>%
+  mutate(SPL = str_split_fixed(SPL, "-", 2)[,1]) %>%
+  group_by(date, SPL) %>%
+  unique() %>%
+  split(f = ~ date + SPL, drop = T)
+
+for (i in seq_along(train)) {
+  
+  # Split the data into train and test sets
+  
+  for (j in 1:n_folds) {
+    counter = counter + 1
+    counter2 = counter2 + 1
+    if (length(.Random.seed) < counter) {
+      counter = 1
+    }
+    set.seed(.Random.seed[counter])
+    
+    train_i = train[[i]] %>%
+      ungroup() %>%
+      select(Mascot_seq, RT) %>%
+      unique() %>%
+      slice_sample(
+        # n = train_split, 
+          prop = .9)
+    
+    {
+      # Make sure that every AA is in the training data
+      AA_presence <- data.frame(AA = rep(AA, times=length(train_i$Mascot_seq)), 
+                                detected = str_detect(train_i$Mascot_seq, rep(AA, times=length(train_i$Mascot_seq)))) %>%
+        table() %>%
+        as.data.frame() %>%
+        as_tibble() %>%
+        filter(!AA == "I") %>%
+        filter(detected == TRUE)
+      
+      while (0 %in% AA_presence$Freq) {
+        counter = counter + 1
+        counter2 = counter2 + 1
+        if (length(.Random.seed) < counter) {
+          counter = 1
+        }
+        set.seed(.Random.seed[counter])
+        
+        train_i = train[[i]] %>%
+          ungroup() %>%
+          select(Mascot_seq, RT) %>%
+          unique() %>%
+          slice_sample(n = train_split)
+        
+        AA_presence <- data.frame(AA = rep(AA, times=length(train_i$Mascot_seq)), 
+                                  detected = str_detect(train_i$Mascot_seq, rep(AA, times=length(train_i$Mascot_seq)))) %>%
+          table() %>%
+          as.data.frame() %>%
+          as_tibble() %>%
+          filter(!AA == "I") %>%
+          filter(detected == TRUE)
+      }
+      }
+    test_i = train[[i]] %>%
+      filter(!Mascot_seq %in% train_i$Mascot_seq) %>%
+      ungroup() %>%
+      select(Mascot_seq, RT) %>%
+      unique()
+    
+    ### Achrom
+    vroom_write(train_i, file = paste0("results/train/achrom/", names(train)[[i]], ".sample", j, ".csv"), 
+                num_threads = 8, append = F)
+    vroom_write(test_i, file = paste0("results/test/achrom/", names(train)[[i]], ".sample", j, ".csv"), 
+                num_threads = 8, append = F)
+    
+    ### DeepLC
+    train_i %>%
+      mutate(modifications = "") %>%
+      rename(seq=Mascot_seq, tr=RT) %>%
+      select(seq, modifications, tr) %>%
+      vroom_write(file = paste0("results/train/DeepLC/", names(train)[[i]], ".sample", j, ".csv"), 
+                  delim = ",", num_threads = 8, append = F)
+    
+    test_i %>%
+      mutate(modifications = "") %>%
+      rename(seq=Mascot_seq, tr=RT) %>%
+      select(seq, modifications) %>%
+      vroom_write(file = paste0("results/test/DeepLC/", names(train)[[i]], ".sample", j, ".csv"), 
+                  delim = ",", num_threads = 8, append = F)
+    
+    ### AutoRT
+    train_i %>%
+      rename(x=Mascot_seq, y=RT) %>%
+      select(x, y) %>%
+      vroom_write(file = paste0("results/train/AutoRT/", names(train)[[i]], ".sample", j, ".tsv"), 
+                  num_threads = 8, append = F, delim = "\t")
+    
+    test_i %>%
+      rename(x=Mascot_seq, y=RT) %>%
+      select(x, y) %>%
+      vroom_write(file = paste0("results/test/AutoRT/", names(train)[[i]], ".sample", j, ".tsv"), 
+                  num_threads = 8, append = F, delim = "\t")
+  }
+}
+print(paste("Performed ", counter2, "sampling operations"))
+```
+
+# (2) Predict: Achrom
+```{r include=FALSE}
+### pytheomics Achrom
+
+# ### Create a new environment 
+# conda_create("r-reticulate")
+# use_condaenv("r-reticulate")
+# conda_install(envname = "r-reticulate", 
+#               packages = c("r-reticulate", "pyteomics", "numpy", "matplotlib", "pandas"), 
+#               forge = T, 
+#               channel = c("conda-forge","bioconda"))
+
+use_condaenv("r-reticulate")
+source_python('~/data/Results_reports/wd/RT_benchmarks/src/01_1_achrom.py')
+```
+# (3) Predict: DeepLC
+```{r include=FALSE}
+# use_condaenv("r-reticulate")
+# conda_install(envname = "r-reticulate", 
+#               packages = c("deeplc"), 
+#               channel = c("bioconda", "conda-forge"))
+
+
+peptide_file = list.files("results/test/DeepLC", full.names = T)
+peptide_file_with_tr  = list.files("results/train/DeepLC", full.names = T)
+
+# Calibration is done on the fly
+for (i in seq_along(peptide_file)) {
+  paste("deeplc --file_pred", peptide_file[i],
+        "--file_cal", peptide_file_with_tr[i],
+        "--file_pred_out", str_replace_all(peptide_file[i], "test", "predict"),
+        "--n_threads", Ncpu) %>%
+    system()
+}
+```
+
+# (4.1) AutoRT: cmds
+```{r AutoRT: cmds, message=TRUE, warning=FALSE, include=FALSE}
+test_AutoRT = paste0(".././workdir/", list.files("results/test/AutoRT", full.names = T, pattern = ".tsv"))
+train_AutoRT = paste0(".././workdir/", list.files("results/train/AutoRT", full.names = T, pattern = ".tsv"))
+
+out_AutoRT = train_AutoRT %>%
+  str_replace(pattern = "results/train/AutoRT/", replacement = "results/train/AutoRT_models/") %>%
+  str_remove_all(pattern = fixed(".tsv")) 
+
+# Dirs to store models
+out_AutoRT %>%
+  str_remove_all(fixed(".././workdir/")) %>%
+  lapply(dir.create, showWarnings = FALSE)
+
+# Dirs to store predictions
+pred_AutoRT <- out_AutoRT %>%
+  str_replace(pattern = "results/train/AutoRT_models/", replacement = "results/predict/AutoRT/")
+
+pred_AutoRT %>%
+  str_remove_all(fixed(".././workdir/")) %>%
+  lapply(dir.create, showWarnings = FALSE)
+
+# Train commands
+cmd_AutoRT_train <- c()
+for (i in seq_along(train_AutoRT)) {
+  cmd_AutoRT_train[i] <- paste("python .././opt/AutoRT/autort.py train -i", train_AutoRT[i] ,
+        "-o", out_AutoRT[i] ,
+        "-e 40 -b 64 -u s -m .././opt/AutoRT/models/base_models_PXD006109/model.json",
+        "--add_ReduceLROnPlateau --early_stop_patience 10")
+}
+vroom_write_lines(cmd_AutoRT_train, "results/cmd_AutoRT_train.txt", append = F)
+
+# Predict commands
+cmd_AutoRT_test <- c()
+for (i in seq_along(train_AutoRT)) {
+  cmd_AutoRT_test[i] <- paste("python .././opt/AutoRT/autort.py predict --test", test_AutoRT[i],
+                              "-s", paste0(out_AutoRT[i], "/model.json"),
+                              "-o", pred_AutoRT[i])
+}
+vroom_write_lines(cmd_AutoRT_test, "results/cmd_AutoRT_test.txt", append = F)
+```
+
+# (4.2) AutoRT: Train
+```{python (4.2) AutoRT: Train, echo=TRUE, command="bash", engine="docker", image="proteomics/autort", share.files=TRUE}
+sh ./results/cmd_AutoRT_train.txt
+```
+
+# (4.3) AutoRT: Predict
+```{python (4.3) AutoRT: Predict, command="bash", engine="docker", image="proteomics/autort", share.files=TRUE}
+#find -name ".././opt/AutoRT/autort.py"
+#cd .././workdir/results/train/AutoRT_models/20200228.SPL1.sample1 && ls -al
+sh ./results/cmd_AutoRT_test.txt
+```
+
+# (5) Performance metrics
+```{r}
+py$rtPSPpred %>% head()
+```
