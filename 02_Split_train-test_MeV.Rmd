@@ -261,5 +261,5 @@ sh ./results/cmd_AutoRT_test.txt
 
 # (5) Performance metrics
 ```{r, command="bash"}
-source("src/02_RT_predictor_preformance.R")
+source("src/03_RT_predictor_preformance_MeV.R")
 ```
