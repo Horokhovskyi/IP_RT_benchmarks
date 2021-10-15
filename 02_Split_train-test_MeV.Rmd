@@ -20,10 +20,22 @@ library(docknitr)
 Ncpu = 7
 
 # Benchmark parameters
-train_split = 500
-n_folds = 10
-peptide_data <- read_xlsx("data/Table_S1_SPI-ART_rev-v31.xlsx", sheet = 2)
+peptide_train <- list.files("data", pattern = ".csv", full.names = T) %>%
+  lapply(vroom, show_col_types = FALSE)
+peptide_test <- list.files("data", pattern = ".txt", full.names = T) %>%
+  lapply(vroom, show_col_types = FALSE)
+
+names(peptide_train) <- list.files("data", pattern = ".csv", full.names = F) %>%
+  str_remove_all(".csv") %>%
+  str_remove_all("pcp_RT_")
+
+names(peptide_test) <- list.files("data", pattern = ".txt", full.names = F) %>%
+  str_remove_all(".txt") %>%
+  str_remove_all("masslist_") 
+
 AA = c("A", "R", "N", "D", "C", "E", "Q", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V")
+n_folds = 10 
+train_split = .90
 
 # Create folders
 {
@@ -52,13 +64,7 @@ AA = c("A", "R", "N", "D", "C", "E", "Q", "G", "H", "I", "L", "K", "M", "F", "P"
 ```{r}
 counter = 1
 counter2 = 1
-train <- peptide_data %>%
-  separate(orig_raw_file, sep = "_", into = c("run", "person", "date", "SPL", "replicate")) %>%
-  select(orig_raw_scan, run, date, SPL, Mascot_seq, RT) %>%
-  mutate(SPL = str_split_fixed(SPL, "-", 2)[,1]) %>%
-  group_by(date, SPL) %>%
-  unique() %>%
-  split(f = ~ date + SPL, drop = T)
+train <- peptide_train
 
 for (i in seq_along(train)) {
   
@@ -73,13 +79,18 @@ for (i in seq_along(train)) {
     set.seed(.Random.seed[counter])
     
     train_i = train[[i]] %>%
-      ungroup() %>%
+      rename(Mascot_seq=s, RT=rt) %>%
       select(Mascot_seq, RT) %>%
-      unique() %>%
+      unique() 
+    
+    AA = str_split(train_i$Mascot_seq, pattern = "") %>% 
+      unlist() %>% 
+      unique()
+    
+    train_i = train_i %>%
       slice_sample(
         # n = train_split, 
-          prop = .9)
-    
+        prop = .9)
     {
       # Make sure that every AA is in the training data
       AA_presence <- data.frame(AA = rep(AA, times=length(train_i$Mascot_seq)), 
@@ -99,10 +110,12 @@ for (i in seq_along(train)) {
         set.seed(.Random.seed[counter])
         
         train_i = train[[i]] %>%
-          ungroup() %>%
+          rename(Mascot_seq=s, RT=rt) %>%
           select(Mascot_seq, RT) %>%
           unique() %>%
-          slice_sample(n = train_split)
+          slice_sample(
+            # n = train_split, 
+            prop = .9)
         
         AA_presence <- data.frame(AA = rep(AA, times=length(train_i$Mascot_seq)), 
                                   detected = str_detect(train_i$Mascot_seq, rep(AA, times=length(train_i$Mascot_seq)))) %>%
@@ -114,6 +127,7 @@ for (i in seq_along(train)) {
       }
       }
     test_i = train[[i]] %>%
+      rename(Mascot_seq=s, RT=rt) %>%
       filter(!Mascot_seq %in% train_i$Mascot_seq) %>%
       ungroup() %>%
       select(Mascot_seq, RT) %>%
@@ -219,9 +233,9 @@ pred_AutoRT %>%
 cmd_AutoRT_train <- c()
 for (i in seq_along(train_AutoRT)) {
   cmd_AutoRT_train[i] <- paste("python .././opt/AutoRT/autort.py train -i", train_AutoRT[i] ,
-        "-o", out_AutoRT[i] ,
-        "-e 40 -b 64 -u s -m .././opt/AutoRT/models/base_models_PXD006109/model.json",
-        "--add_ReduceLROnPlateau --early_stop_patience 10")
+                               "-o", out_AutoRT[i] ,
+                               "-e 40 -b 64 -u s -m .././opt/AutoRT/models/base_models_PXD006109/model.json",
+                               "--add_ReduceLROnPlateau --early_stop_patience 10")
 }
 vroom_write_lines(cmd_AutoRT_train, "results/cmd_AutoRT_train.txt", append = F)
 
@@ -236,7 +250,7 @@ vroom_write_lines(cmd_AutoRT_test, "results/cmd_AutoRT_test.txt", append = F)
 ```
 
 # (4.2) AutoRT: Train
-```{python (4.2) AutoRT: Train, command="bash", engine="docker", image="proteomics/autort", share.files=TRUE}
+```{python (4.2) AutoRT: Train, echo=TRUE, command="bash", engine="docker", image="proteomics/autort", share.files=TRUE}
 sh ./results/cmd_AutoRT_train.txt
 ```
 

@@ -81,19 +81,19 @@ RT_predictors <- c(RT_predictors, "AutoRT")
 split_structure <- files_test %>%
   names() %>%
   as_tibble() %>%
-  separate(value, sep = "[.]", into = c("date", "SPL", "sample")) %>%
+  separate(value, sep = "[.]", into = c("dataset", "sample")) %>%
   mutate(sample = as.integer(str_remove(sample, "sample"))) %>%
-  select(date, SPL) %>%
+  select(dataset, sample) %>%
   unique()
 
 RT_predictors <- paste0("pred_", RT_predictors)
 
 # ---------------------------------------- (1) Pre-processing ------------------------------------------------
 out <- tibble()
-for (i in seq_along(split_structure$SPL)) {
+for (i in seq_along(split_structure$dataset)) {
   
-  SPL <- split_structure$SPL[i]
-  keep <- files_test[grep(SPL, names(files_test))]
+  dataset <- split_structure$dataset[i]
+  keep <- files_test[grep(dataset, names(files_test))]
   
   for (j in seq_along(keep)) {
     
@@ -103,7 +103,7 @@ for (i in seq_along(split_structure$SPL)) {
                                   pred = get(pred)[[names(keep)[j]]]$RT_pred) %>%
         t() %>%
         as_tibble() %>%
-        mutate(SPL = SPL,
+        mutate(dataset = dataset,
                sample = names(keep)[j],
                predictor = pred)
       out <- rbind(out, out_tmp)
@@ -123,12 +123,12 @@ for (i in seq_along(metrics)) {
   keep_col = metrics[[i]]
   gg[[i]] <- out %>%
     filter(metric == keep_col) %>%
-    ggplot(aes(y=value, x=as.factor(SPL))) + 
+    ggplot(aes(y=value, x=as.factor(dataset))) + 
     geom_boxplot(aes(fill=as.factor(predictor)), stat="boxplot", position="dodge", alpha=0.5, width=0.2) + 
     theme_bw() + 
     theme(text=element_text(family="sans", face="plain", color="#000000", size=15, hjust=0.5, vjust=0.5)) + 
     guides(fill=guide_legend(title="predictor")) + 
-    xlab("SPL") + 
+    xlab("dataset") + 
     ylab(keep_col)
   names(gg)[i] = keep_col
   
@@ -152,15 +152,17 @@ names(dt) <- RT_predictors
 dt <- dt[2:length(dt)] %>%
   bind_rows(.id = "method") %>%
   left_join(dt$files_test) %>%
-  mutate(SPL = str_split_fixed(file, pattern = fixed("."), n = 3)[,2]) %>%
+  mutate(dataset = str_split_fixed(file, pattern = fixed("."), n = 3)[,1]) %>%
+  mutate(sample = str_split_fixed(file, pattern = fixed("."), n = 3)[,2]) %>%
   select(-file)
+dt
 
 library(ggpubr)
 gg$scatter_correlation <- ggscatter(dt, x="RT", y="RT_pred", 
                   fill = "lightgrey", 
                   color = "black", shape = 21, size = 2, alpha = 0.3,
                   add.params = list(color = "orange", fill = "blue"), # Customize reg. line
-                  facet.by = c("SPL", "method"),
+                  facet.by = c("dataset", "method"),
                   title = paste("Predicted vs Observed retention time"), 
                   conf.int = T, 
                   conf.int.level = 1 - 10^-15,

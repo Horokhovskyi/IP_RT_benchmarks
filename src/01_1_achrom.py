@@ -18,11 +18,13 @@ for i, data in enumerate(files_train):
   RCs = achrom.get_RCs(sequences = df['Mascot_seq'].tolist(), RTs=df['RT'].tolist(), term_aa=False)
   
   # Prediction
-  pep = pred['Mascot_seq'].tolist()
-
-  RTpred = numpy.zeros(len(pep))
-  for j in range(0,len(pep)):
-      RTpred[j] = achrom.calculate_RT(pep[j], RCs, raise_no_mod=False)
+  RTpred = pred['Mascot_seq'].apply(
+    lambda x : achrom.calculate_RT(x, RCs, raise_no_mod=False)
+  )
   
   out = pd.DataFrame({'Mascot_seq': pep,'RT': RTpred})    
   out.to_csv(files_train[i].replace("train", "predict", 1))
+
+
+
+
