@@ -246,6 +246,6 @@ sh ./results/cmd_AutoRT_test.txt
 ```
 
 # (5) Performance metrics
-```{r}
-# py$rtPSPpred %>% head()
+```{r, command="bash"}
+source("src/02_RT_predictor_preformance.R")
 ```
