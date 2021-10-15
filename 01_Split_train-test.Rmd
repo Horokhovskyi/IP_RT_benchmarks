@@ -242,8 +242,6 @@ sh ./results/cmd_AutoRT_train.txt
 
 # (4.3) AutoRT: Predict
 ```{python (4.3) AutoRT: Predict, command="bash", engine="docker", image="proteomics/autort", share.files=TRUE}
-#find -name ".././opt/AutoRT/autort.py"
-#cd .././workdir/results/train/AutoRT_models/20200228.SPL1.sample1 && ls -al
 sh ./results/cmd_AutoRT_test.txt
 ```
 
